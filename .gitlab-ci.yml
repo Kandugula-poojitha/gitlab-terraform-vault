@@ -1,0 +1,74 @@
+image: registry.gitlab.com/gitlab-org/terraform-images/stable:latest
+
+variables:
+  TF_ROOT: ${CI_PROJECT_DIR}
+  TF_ADDRESS: ${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/terraform/state/${CI_PROJECT_NAME}
+  HCP_API_ENDPOINT: https://api.cloud.hashicorp.com
+  HCP_ORGANIZATION_ID: "****************GIVE YOUR HCP_ORGANIZATION_ID:"
+  HCP_PROJECT_ID: "**********************GIVE YOUR HCP_PROJECT_ID"
+  HCP_APP_NAME: "************GIVE YOUR APP NAME "
+  AWS_DEFAULT_REGION: "us-east-1"
+
+cache:
+  key: example-production
+  paths:
+    - ${TF_ROOT}/.terraform
+
+before_script:
+  - cd ${TF_ROOT}
+  - |
+    # Authenticate with HCP and retrieve secrets
+    HCP_API_TOKEN=$(curl --location "https://auth.idp.hashicorp.com/oauth2/token" \
+    --header "Content-Type: application/x-www-form-urlencoded" \
+    --data-urlencode "client_id=$HCP_CLIENT_ID" \
+    --data-urlencode "client_secret=$HCP_CLIENT_SECRET" \
+    --data-urlencode "grant_type=client_credentials" \
+    --data-urlencode "audience=https://api.hashicorp.cloud" | jq -r .access_token)
+    
+    # Retrieve secrets from HCP Vault
+    SECRETS=$(curl \
+    --location "https://api.cloud.hashicorp.com/secrets/2023-06-13/organizations/${HCP_ORGANIZATION_ID}/projects/${HCP_PROJECT_ID}/apps/sample-app/open" \
+    --request GET \
+    --header "Authorization: Bearer $HCP_API_TOKEN")
+    
+    # Extract AWS credentials from the array of secrets
+    export AWS_ACCESS_KEY_ID=$(echo $SECRETS | jq -r '.secrets[] | select(.name == "AWS_ACCESS_KEY_ID") | .version.value')
+    export AWS_SECRET_ACCESS_KEY=$(echo $SECRETS | jq -r '.secrets[] | select(.name == "AWS_SECRET_ACCESS_KEY") | .version.value')
+    
+stages:
+  - prepare
+  - validate
+  - build
+  - deploy
+
+init:
+  stage: prepare
+  script:
+    - gitlab-terraform init
+
+validate:
+  stage: validate
+  script:
+    - gitlab-terraform validate
+
+plan:
+  stage: build
+  script:
+    - gitlab-terraform plan
+    - gitlab-terraform plan-json
+  artifacts:
+    name: plan
+    paths:
+      - ${TF_ROOT}/plan.cache
+    reports:
+      terraform: ${TF_ROOT}/plan.json
+
+apply:
+  stage: deploy
+  environment:
+    name: production
+  script:
+    - gitlab-terraform apply -auto-approve
+  dependencies:
+      - plan
+    
